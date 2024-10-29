@@ -34,7 +34,8 @@ var _ = Describe("", func() {
 		t.createServiceExport(&clients[0])
 	})
 
-	Specify("Exporting a ClusterIP service should create a ServiceImport of type ClusterSetIP in the service's namespace in each cluster",
+	Specify("Exporting a ClusterIP service should create a ServiceImport of type ClusterSetIP in the service's namespace in each cluster."+
+		"Unexporting should delete the ServiceImport",
 		Label(RequiredLabel), func() {
 			AddReportEntry(SpecRefReportEntry, "https://github.com/kubernetes/enhancements/tree/master/keps/sig-multicluster/1645-multi-cluster-services-api#importing-services")
 
@@ -45,6 +46,15 @@ var _ = Describe("", func() {
 
 				Expect(serviceImport.Spec.Type).To(Equal(v1alpha1.ClusterSetIP), reportNonConformant(
 					fmt.Sprintf("ServiceImport on cluster %q has type %q", clients[i].name, serviceImport.Spec.Type)))
+			}
+
+			By("Unexporting the service")
+
+			t.deleteServiceExport(&clients[0])
+
+			for i := range clients {
+				t.awaitNoServiceImport(&clients[i], helloServiceName, fmt.Sprintf(
+					"the ServiceImport still exists on cluster %q after unexporting the service", clients[i].name))
 			}
 		})
 
@@ -85,6 +95,44 @@ var _ = Describe("", func() {
 			Expect(serviceImport.Spec.IPs).ToNot(BeEmpty(), reportNonConformant(""))
 			Expect(net.ParseIP(serviceImport.Spec.IPs[0])).ToNot(BeNil(),
 				reportNonConformant(fmt.Sprintf("The value %q is not a valid IP", serviceImport.Spec.IPs[0])))
+		})
+
+	Specify("A ServiceImport should only exist as long as there's at least one exporting cluster",
+		Label(RequiredLabel), func() {
+			requireTwoClusters()
+
+			AddReportEntry(SpecRefReportEntry, "https://github.com/kubernetes/enhancements/blob/master/keps/sig-multicluster/1645-multi-cluster-services-api/README.md#importing-services")
+
+			serviceImport := t.awaitServiceImport(&clients[0], t.helloService.Name, func(serviceImport *v1alpha1.ServiceImport) bool {
+				return true
+			})
+			Expect(serviceImport).NotTo(BeNil(), "ServiceImport was not found")
+
+			By(fmt.Sprintf("Exporting the service on the second cluster %q", clients[1].name))
+
+			t.deployHelloService(&clients[1], newHelloService())
+			t.createServiceExport(&clients[1])
+
+			// Sanity check and to also wait a bit for the second cluster to export. There's no deterministic way to tell if/when the
+			// second cluster has finished exporting other than utilizing different service ports in each cluster but that's already
+			// done in another test case.
+			t.ensureServiceImport(&clients[0], t.helloService.Name, fmt.Sprintf(
+				"the ServiceImport no longer exists after exporting on cluster %q", clients[1].name))
+
+			By(fmt.Sprintf("Unexporting the service on the first cluster %q", clients[0].name))
+
+			t.deleteServiceExport(&clients[0])
+
+			t.ensureServiceImport(&clients[0], t.helloService.Name, fmt.Sprintf(
+				"the ServiceImport no longer exists after unexporting the service on cluster %q while still exported on cluster %q",
+				clients[0].name, clients[1].name))
+
+			By(fmt.Sprintf("Unexporting the service on the second cluster %q", clients[1].name))
+
+			t.deleteServiceExport(&clients[1])
+
+			t.awaitNoServiceImport(&clients[0], helloServiceName,
+				"the ServiceImport still exists after unexporting the service on all clusters")
 		})
 
 	Context("A service exported on two clusters", func() {
