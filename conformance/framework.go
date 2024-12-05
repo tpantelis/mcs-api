@@ -23,37 +23,30 @@ import (
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
-	rest "k8s.io/client-go/rest"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 )
 
 type (
-	DoOperationFunc func() (interface{}, error)
+	DoOperationFunc func(ctx context.Context) (interface{}, error)
 	CheckResultFunc func(result interface{}) (bool, string, error)
 )
 
-// AwaitUntil periodically performs the given operation until the given CheckResultFunc returns true, an error, or a
+// AwaitResultOrError periodically performs the given operation until the given CheckResultFunc returns true, an error, or a
 // timeout is reached.
-func AwaitUntil(opMsg string, doOperation DoOperationFunc, checkResult CheckResultFunc) interface{} {
-	result, errMsg, err := AwaitResultOrError(opMsg, doOperation, checkResult)
-	Expect(err).NotTo(HaveOccurred(), errMsg)
-
-	return result
-}
-
-func AwaitResultOrError(opMsg string, doOperation DoOperationFunc, checkResult CheckResultFunc) (interface{}, string, error) {
+func AwaitResultOrError(opMsg string, doOperation DoOperationFunc, checkResult CheckResultFunc) (interface{}, error) {
 	var finalResult interface{}
 	var lastMsg string
 
-	err := wait.PollUntilContextTimeout(context.Background(), 500*time.Millisecond,
-		10*time.Second, true, func(_ context.Context) (bool, error) {
-			result, err := doOperation()
+	err := wait.PollUntilContextTimeout(context.Background(), time.Second,
+		20*time.Second, true, func(ctx context.Context) (bool, error) {
+			result, err := doOperation(ctx)
 			if err != nil {
 				if IsTransientError(err, opMsg) {
 					return false, nil
@@ -75,26 +68,31 @@ func AwaitResultOrError(opMsg string, doOperation DoOperationFunc, checkResult C
 			return false, nil
 		})
 
-	errMsg := ""
 	if err != nil {
-		errMsg = "Failed to " + opMsg
+		errMsg := "Failed to " + opMsg
 		if lastMsg != "" {
 			errMsg += ". " + lastMsg
 		}
+
+		if wait.Interrupted(err) {
+			err = errors.New(errMsg)
+		} else {
+			err = errors.Wrap(err, errMsg)
+		}
 	}
 
-	return finalResult, errMsg, err
+	return finalResult, err
 }
 
 // identify API errors which could be considered transient/recoverable
 // due to server state.
 func IsTransientError(err error, opMsg string) bool {
-	if errors.IsInternalError(err) ||
-		errors.IsServerTimeout(err) ||
-		errors.IsTimeout(err) ||
-		errors.IsServiceUnavailable(err) ||
-		errors.IsUnexpectedServerError(err) ||
-		errors.IsTooManyRequests(err) {
+	if apierrors.IsInternalError(err) ||
+		apierrors.IsServerTimeout(err) ||
+		apierrors.IsTimeout(err) ||
+		apierrors.IsServiceUnavailable(err) ||
+		apierrors.IsUnexpectedServerError(err) ||
+		apierrors.IsTooManyRequests(err) {
 		fmt.Fprintf(GinkgoWriter, "Transient failure when attempting to %s: %v", opMsg, err)
 		return true
 	}
