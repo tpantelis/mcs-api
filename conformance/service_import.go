@@ -202,7 +202,7 @@ func testClusterIPServiceImport() {
 		)
 	})
 
-	SpecifyWithSpecRef("An IP should be allocated for a ClusterSetIP ServiceImport",
+	SpecifyWithSpecRef("An IP should be allocated for a ClusterSetIP ServiceImport for each IP family",
 		"https://github.com/kubernetes/enhancements/tree/master/keps/sig-multicluster/1645-multi-cluster-services-api#clustersetip",
 		Label(RequiredLabel), func() {
 			serviceImport := t.awaitServiceImport(&clients[0], t.helloService.Name, false,
@@ -210,8 +210,16 @@ func testClusterIPServiceImport() {
 					g.Expect(serviceImport.Spec.IPs).ToNot(BeEmpty(), reportNonConformant(""))
 				})
 
-			Expect(net.ParseIP(serviceImport.Spec.IPs[0])).ToNot(BeNil(),
-				reportNonConformant(fmt.Sprintf("The value %q is not a valid IP", serviceImport.Spec.IPs[0])))
+			Expect(serviceImport.Spec.IPs).To(HaveLen(len(t.helloService.Spec.IPFamilies)), reportNonConformant(
+				"The ServiceImport IPs field must have the same number of IPs as the corresponding Service's IPFamilies"))
+
+			for i := range t.helloService.Spec.IPFamilies {
+				Expect(net.ParseIP(serviceImport.Spec.IPs[i])).ToNot(BeNil(),
+					reportNonConformant(fmt.Sprintf("The value %q is not a valid IP", serviceImport.Spec.IPs[0])))
+				Expect(ipFamilyOf(serviceImport.Spec.IPs[i])).To(Equal(t.helloService.Spec.IPFamilies[i]),
+					reportNonConformant(fmt.Sprintf("The family of IP %q should be %q", serviceImport.Spec.IPs[i],
+						t.helloService.Spec.IPFamilies[i])))
+			}
 		})
 
 	SpecifyWithSpecRef("The ports for a ClusterSetIP ServiceImport should match those of the exported service",
@@ -316,6 +324,7 @@ func testExternalNameService() {
 	BeforeEach(func() {
 		t.helloService.Spec.Type = corev1.ServiceTypeExternalName
 		t.helloService.Spec.ExternalName = "example.com"
+		t.helloService.Spec.IPFamilyPolicy = nil
 	})
 
 	SpecifyWithSpecRef("Exporting an ExternalName service should set ServiceExport Valid condition to False",
